@@ -48,6 +48,8 @@ void command_processor(void * p_event_data, uint16_t event_size) {
 
     NRF_LOG_HEXDUMP_INFO(command.data, command.len);
 
+    command.data[command.len] = '\0';
+
     char* ptr = (char*)command.data;
     uint8_t leds_num = atoi(ptr);
     ptr = strstr(ptr, " ") + 1;
