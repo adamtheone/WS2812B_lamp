@@ -1,1 +1,4 @@
 Output/
+/nrf52_fw/project/app/*.emSession
+/nrf52_fw/project/app/*.jlink
+/nrf52_fw/project/bootloader/*.emSession

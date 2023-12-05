@@ -42,11 +42,9 @@
 #include <stdbool.h>
 #include "nordic_common.h"
 #include "app_error.h"
-#include "app_uart.h"
 #include "ble_db_discovery.h"
 #include "app_timer.h"
 #include "app_util.h"
-#include "bsp_btn_ble.h"
 #include "ble.h"
 #include "ble_gap.h"
 #include "ble_hci.h"
@@ -58,6 +56,10 @@
 #include "nrf_pwr_mgmt.h"
 #include "nrf_ble_scan.h"
 
+#include "nrf_delay.h"
+#include <string.h>
+#include "nrf_gpio.h"
+
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
@@ -66,13 +68,7 @@
 #define APP_BLE_CONN_CFG_TAG    1                                       /**< Tag that refers to the BLE stack configuration set with @ref sd_ble_cfg_set. The default tag is @ref BLE_CONN_CFG_TAG_DEFAULT. */
 #define APP_BLE_OBSERVER_PRIO   3                                       /**< BLE observer priority of the application. There is no need to modify this value. */
 
-#define UART_TX_BUF_SIZE        256                                     /**< UART TX buffer size. */
-#define UART_RX_BUF_SIZE        256                                     /**< UART RX buffer size. */
-
 #define NUS_SERVICE_UUID_TYPE   BLE_UUID_TYPE_VENDOR_BEGIN              /**< UUID type for the Nordic UART Service (vendor specific). */
-
-#define ECHOBACK_BLE_UART_DATA  1                                       /**< Echo the UART data that is received over the Nordic UART Service (NUS) back to the sender. */
-
 
 BLE_NUS_C_DEF(m_ble_nus_c);                                             /**< BLE Nordic UART Service (NUS) client instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                               /**< GATT module instance. */
@@ -83,6 +79,9 @@ NRF_BLE_GQ_DEF(m_ble_gatt_queue,                                        /**< BLE
                NRF_BLE_GQ_QUEUE_SIZE);
 
 static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - OPCODE_LENGTH - HANDLE_LENGTH; /**< Maximum length of data (in bytes) that can be transmitted to the peer by the Nordic UART service module. */
+
+
+static bool send_command = false;
 
 /**@brief NUS UUID. */
 static ble_uuid_t const m_nus_uuid =
@@ -126,9 +125,6 @@ static void scan_start(void)
 
     ret = nrf_ble_scan_start(&m_scan);
     APP_ERROR_CHECK(ret);
-
-    ret = bsp_indication_set(BSP_INDICATE_SCANNING);
-    APP_ERROR_CHECK(ret);
 }
 
 
@@ -140,6 +136,7 @@ static void scan_evt_handler(scan_evt_t const * p_scan_evt)
 
     switch(p_scan_evt->scan_evt_id)
     {
+
          case NRF_BLE_SCAN_EVT_CONNECTING_ERROR:
          {
               err_code = p_scan_evt->params.connecting_err.err_code;
@@ -148,7 +145,7 @@ static void scan_evt_handler(scan_evt_t const * p_scan_evt)
 
          case NRF_BLE_SCAN_EVT_CONNECTED:
          {
-              ble_gap_evt_connected_t const * p_connected =
+            ble_gap_evt_connected_t const * p_connected =
                                p_scan_evt->params.connected.p_connected;
              // Scan is automatically stopped by the connection.
              NRF_LOG_INFO("Connecting to target %02x%02x%02x%02x%02x%02x",
@@ -188,10 +185,15 @@ static void scan_init(void)
     err_code = nrf_ble_scan_init(&m_scan, &init_scan, scan_evt_handler);
     APP_ERROR_CHECK(err_code);
 
-    err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_UUID_FILTER, &m_nus_uuid);
+    //uint8_t target_addr[BLE_GAP_ADDR_LEN] = {0xF8, 0x36, 0x19, 0xFC, 0x3A, 0x53};
+    uint8_t target_addr[BLE_GAP_ADDR_LEN] = {0x53, 0x3A, 0xFC, 0x19, 0x36, 0xF8};
+    //uint8_t target_addr[BLE_GAP_ADDR_LEN] = {0xD6, 0xAE, 0x04, 0x83, 0xC9, 0x19};
+    //uint8_t target_addr[BLE_GAP_ADDR_LEN] = {0x19, 0xC9, 0x83, 0x04, 0xAE, 0xD6};
+
+    err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_ADDR_FILTER, target_addr);
     APP_ERROR_CHECK(err_code);
 
-    err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_UUID_FILTER, false);
+    err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_ADDR_FILTER, false);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -208,107 +210,6 @@ static void db_disc_handler(ble_db_discovery_evt_t * p_evt)
 {
     ble_nus_c_on_db_disc_evt(&m_ble_nus_c, p_evt);
 }
-
-
-/**@brief Function for handling characters received by the Nordic UART Service (NUS).
- *
- * @details This function takes a list of characters of length data_len and prints the characters out on UART.
- *          If @ref ECHOBACK_BLE_UART_DATA is set, the data is sent back to sender.
- */
-static void ble_nus_chars_received_uart_print(uint8_t * p_data, uint16_t data_len)
-{
-    ret_code_t ret_val;
-
-    NRF_LOG_DEBUG("Receiving data.");
-    NRF_LOG_HEXDUMP_DEBUG(p_data, data_len);
-
-    for (uint32_t i = 0; i < data_len; i++)
-    {
-        do
-        {
-            ret_val = app_uart_put(p_data[i]);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
-            {
-                NRF_LOG_ERROR("app_uart_put failed for index 0x%04x.", i);
-                APP_ERROR_CHECK(ret_val);
-            }
-        } while (ret_val == NRF_ERROR_BUSY);
-    }
-    if (p_data[data_len-1] == '\r')
-    {
-        while (app_uart_put('\n') == NRF_ERROR_BUSY);
-    }
-    if (ECHOBACK_BLE_UART_DATA)
-    {
-        // Send data back to the peripheral.
-        do
-        {
-            ret_val = ble_nus_c_string_send(&m_ble_nus_c, p_data, data_len);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
-            {
-                NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
-                APP_ERROR_CHECK(ret_val);
-            }
-        } while (ret_val == NRF_ERROR_BUSY);
-    }
-}
-
-
-/**@brief   Function for handling app_uart events.
- *
- * @details This function receives a single character from the app_uart module and appends it to
- *          a string. The string is sent over BLE when the last character received is a
- *          'new line' '\n' (hex 0x0A) or if the string reaches the maximum data length.
- */
-void uart_event_handle(app_uart_evt_t * p_event)
-{
-    static uint8_t data_array[BLE_NUS_MAX_DATA_LEN];
-    static uint16_t index = 0;
-    uint32_t ret_val;
-
-    switch (p_event->evt_type)
-    {
-        /**@snippet [Handling data from UART] */
-        case APP_UART_DATA_READY:
-            UNUSED_VARIABLE(app_uart_get(&data_array[index]));
-            index++;
-
-            if ((data_array[index - 1] == '\n') ||
-                (data_array[index - 1] == '\r') ||
-                (index >= (m_ble_nus_max_data_len)))
-            {
-                NRF_LOG_DEBUG("Ready to send data over BLE NUS");
-                NRF_LOG_HEXDUMP_DEBUG(data_array, index);
-
-                do
-                {
-                    ret_val = ble_nus_c_string_send(&m_ble_nus_c, data_array, index);
-                    if ( (ret_val != NRF_ERROR_INVALID_STATE) && (ret_val != NRF_ERROR_RESOURCES) )
-                    {
-                        APP_ERROR_CHECK(ret_val);
-                    }
-                } while (ret_val == NRF_ERROR_RESOURCES);
-
-                index = 0;
-            }
-            break;
-
-        /**@snippet [Handling data from UART] */
-        case APP_UART_COMMUNICATION_ERROR:
-            NRF_LOG_ERROR("Communication error occurred while handling UART.");
-            APP_ERROR_HANDLER(p_event->data.error_communication);
-            break;
-
-        case APP_UART_FIFO_ERROR:
-            NRF_LOG_ERROR("Error occurred in FIFO module used by UART.");
-            APP_ERROR_HANDLER(p_event->data.error_code);
-            break;
-
-        default:
-            break;
-    }
-}
-
 
 /**@brief Callback handling Nordic UART Service (NUS) client events.
  *
@@ -333,10 +234,10 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t con
             err_code = ble_nus_c_tx_notif_enable(p_ble_nus_c);
             APP_ERROR_CHECK(err_code);
             NRF_LOG_INFO("Connected to device with Nordic UART Service.");
+            send_command = true;
             break;
 
         case BLE_NUS_C_EVT_NUS_TX_EVT:
-            ble_nus_chars_received_uart_print(p_ble_nus_evt->p_data, p_ble_nus_evt->data_len);
             break;
 
         case BLE_NUS_C_EVT_DISCONNECTED:
@@ -346,37 +247,6 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t con
     }
 }
 /**@snippet [Handling events from the ble_nus_c module] */
-
-
-/**
- * @brief Function for handling shutdown events.
- *
- * @param[in]   event       Shutdown type.
- */
-static bool shutdown_handler(nrf_pwr_mgmt_evt_t event)
-{
-    ret_code_t err_code;
-
-    err_code = bsp_indication_set(BSP_INDICATE_IDLE);
-    APP_ERROR_CHECK(err_code);
-
-    switch (event)
-    {
-        case NRF_PWR_MGMT_EVT_PREPARE_WAKEUP:
-            // Prepare wakeup buttons.
-            err_code = bsp_btn_ble_sleep_mode_prepare();
-            APP_ERROR_CHECK(err_code);
-            break;
-
-        default:
-            break;
-    }
-
-    return true;
-}
-
-NRF_PWR_MGMT_HANDLER_REGISTER(shutdown_handler, APP_SHUTDOWN_HANDLER_PRIORITY);
-
 
 /**@brief Function for handling BLE events.
  *
@@ -392,9 +262,6 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
     {
         case BLE_GAP_EVT_CONNECTED:
             err_code = ble_nus_c_handles_assign(&m_ble_nus_c, p_ble_evt->evt.gap_evt.conn_handle, NULL);
-            APP_ERROR_CHECK(err_code);
-
-            err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
             APP_ERROR_CHECK(err_code);
 
             // start discovery of services. The NUS Client waits for a discovery result
@@ -515,60 +382,6 @@ void gatt_init(void)
 }
 
 
-/**@brief Function for handling events from the BSP module.
- *
- * @param[in] event  Event generated by button press.
- */
-void bsp_event_handler(bsp_event_t event)
-{
-    ret_code_t err_code;
-
-    switch (event)
-    {
-        case BSP_EVENT_SLEEP:
-            nrf_pwr_mgmt_shutdown(NRF_PWR_MGMT_SHUTDOWN_GOTO_SYSOFF);
-            break;
-
-        case BSP_EVENT_DISCONNECT:
-            err_code = sd_ble_gap_disconnect(m_ble_nus_c.conn_handle,
-                                             BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-            if (err_code != NRF_ERROR_INVALID_STATE)
-            {
-                APP_ERROR_CHECK(err_code);
-            }
-            break;
-
-        default:
-            break;
-    }
-}
-
-/**@brief Function for initializing the UART. */
-static void uart_init(void)
-{
-    ret_code_t err_code;
-
-    app_uart_comm_params_t const comm_params =
-    {
-        .rx_pin_no    = RX_PIN_NUMBER,
-        .tx_pin_no    = TX_PIN_NUMBER,
-        .rts_pin_no   = RTS_PIN_NUMBER,
-        .cts_pin_no   = CTS_PIN_NUMBER,
-        .flow_control = APP_UART_FLOW_CONTROL_DISABLED,
-        .use_parity   = false,
-        .baud_rate    = UART_BAUDRATE_BAUDRATE_Baud115200
-    };
-
-    APP_UART_FIFO_INIT(&comm_params,
-                       UART_RX_BUF_SIZE,
-                       UART_TX_BUF_SIZE,
-                       uart_event_handle,
-                       APP_IRQ_PRIORITY_LOWEST,
-                       err_code);
-
-    APP_ERROR_CHECK(err_code);
-}
-
 /**@brief Function for initializing the Nordic UART Service (NUS) client. */
 static void nus_c_init(void)
 {
@@ -580,20 +393,6 @@ static void nus_c_init(void)
     init.p_gatt_queue  = &m_ble_gatt_queue;
 
     err_code = ble_nus_c_init(&m_ble_nus_c, &init);
-    APP_ERROR_CHECK(err_code);
-}
-
-
-/**@brief Function for initializing buttons and leds. */
-static void buttons_leds_init(void)
-{
-    ret_code_t err_code;
-    bsp_event_t startup_event;
-
-    err_code = bsp_init(BSP_INIT_LEDS, bsp_event_handler);
-    APP_ERROR_CHECK(err_code);
-
-    err_code = bsp_btn_ble_init(NULL, &startup_event);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -653,14 +452,11 @@ static void idle_state_handle(void)
     }
 }
 
-
 int main(void)
 {
     // Initialize.
     log_init();
     timer_init();
-    uart_init();
-    buttons_leds_init();
     db_discovery_init();
     power_management_init();
     ble_stack_init();
@@ -669,13 +465,30 @@ int main(void)
     scan_init();
 
     // Start execution.
-    printf("BLE UART central example started.\r\n");
     NRF_LOG_INFO("BLE UART central example started.");
     scan_start();
+
+    nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(0,6));
+    nrf_gpio_pin_clear(NRF_GPIO_PIN_MAP(0,6));
+
+    nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(0,30));
+    nrf_gpio_pin_set(NRF_GPIO_PIN_MAP(0,30));
+
+    ret_code_t err_code = sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_SCAN_INIT, 0, +8);
+    APP_ERROR_CHECK(err_code);
 
     // Enter main loop.
     for (;;)
     {
-        idle_state_handle();
+        idle_state_handle();        
+        if (send_command) {
+            NRF_LOG_INFO("Sending");
+            send_command = false;
+            nrf_delay_ms(100);
+            char cmd[] = "90 80 30 0#";
+            ble_nus_c_string_send(&m_ble_nus_c, cmd, strlen(cmd));
+            nrf_gpio_pin_set(NRF_GPIO_PIN_MAP(0,6));
+            nrf_gpio_pin_clear(NRF_GPIO_PIN_MAP(0,30));
+        }
     }
 }

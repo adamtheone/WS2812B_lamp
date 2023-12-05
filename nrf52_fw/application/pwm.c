@@ -98,7 +98,12 @@ uint32_t pwm_init(void) {
     
     drv_ws2812_led_set(0,0);
 
-    return nrfx_pwm_init(&m_pwm0, &pwm_config, pwm_handler);
+    uint8_t ret = nrfx_pwm_init(&m_pwm0, &pwm_config, pwm_handler);
+    
+    if (ret == NRF_SUCCESS) {
+        drv_ws2812_update(0,0,0, 90);
+    }
+    return ret;
 }
 
 void drv_ws2812_update(uint8_t r, uint8_t g, uint8_t b, uint8_t leds_num) {

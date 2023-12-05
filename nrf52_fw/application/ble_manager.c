@@ -18,6 +18,7 @@ const nrf_queue_t *p_nus_rx_queue = &nus_rx_queue;
 //---------------------------------------------------------------------------------------------------------------------
 // GLOBALS
 //---------------------------------------------------------------------------------------------------------------------
+static bool is_led_on = false;
 //---------------------------------------------------------------------------------------------------------------------
 // PRIVATE FUNCTIONS
 //---------------------------------------------------------------------------------------------------------------------
@@ -44,6 +45,7 @@ void command_processor(void * p_event_data, uint16_t event_size) {
 
     if (!command.len) {
         NRF_LOG_ERROR("Invalid NUS rx packet len");
+        return;
     }
 
     NRF_LOG_HEXDUMP_INFO(command.data, command.len);
@@ -59,6 +61,21 @@ void command_processor(void * p_event_data, uint16_t event_size) {
     ptr = strstr(ptr, " ") + 1;
     uint8_t b = atoi(ptr);
 
+    bool toggle = strstr((char*)command.data, "#");
+    if (ptr != NULL) {
+        if (is_led_on) {
+            r = 0;
+            g = 0;
+            b = 0;
+        }
+    }
+
+    if (((uint16_t)r + (uint16_t)g + (uint16_t)b) > (uint16_t)0) {
+        is_led_on = true;
+    } else {
+        is_led_on = false;
+    }
+        
     drv_ws2812_update(r, g, b, leds_num);
     NRF_LOG_INFO("leds:%d r:%d g:%d b:%d", leds_num, r, g, b);
 }
